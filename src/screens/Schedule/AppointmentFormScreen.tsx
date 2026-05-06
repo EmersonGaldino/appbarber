@@ -1,0 +1,321 @@
+import React, { useState, useLayoutEffect, useMemo } from 'react';
+import { View, Text, ScrollView, StyleSheet, Alert } from 'react-native';
+import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
+import { StackNavigationProp } from '@react-navigation/stack';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
+import { useAppContext } from '../../context/AppContext';
+import { ScheduleStackParamList, PaymentMethod } from '../../types';
+import { FormField } from '../../components/FormField';
+import { PressableScale } from '../../components/PressableScale';
+import { formatCurrency, PAYMENT_METHODS, addMinutesToTime, maskPhoneBR, PHONE_MASK_MAX_LENGTH } from '../../utils/helpers';
+import { colors, radius, shadow, spacing, typography } from '../../theme';
+
+type Nav = StackNavigationProp<ScheduleStackParamList, 'AppointmentForm'>;
+type Route = RouteProp<ScheduleStackParamList, 'AppointmentForm'>;
+
+export function AppointmentFormScreen() {
+  const navigation = useNavigation<Nav>();
+  const route = useRoute<Route>();
+  const { data, addAppointment, updateAppointment } = useAppContext();
+  const editing = route.params?.appointment;
+
+  const [clientName, setClientName] = useState(editing?.clientName ?? '');
+  const [clientPhone, setClientPhone] = useState(maskPhoneBR(editing?.clientPhone ?? ''));
+  const [date, setDate] = useState(editing?.date ?? route.params?.date ?? new Date().toISOString().split('T')[0]);
+  const [startTime, setStartTime] = useState(editing?.startTime ?? '09:00');
+  const [professionalId, setProfessionalId] = useState(editing?.professionalId ?? route.params?.professionalId ?? '');
+  const [selectedServiceIds, setSelectedServiceIds] = useState<string[]>(editing?.serviceIds ?? []);
+  const [selectedProductIds, setSelectedProductIds] = useState<string[]>(editing?.productIds ?? []);
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod | undefined>(editing?.paymentMethod);
+  const [notes, setNotes] = useState(editing?.notes ?? '');
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [saving, setSaving] = useState(false);
+
+  useLayoutEffect(() => {
+    navigation.setOptions({ title: editing ? 'Editar agendamento' : 'Novo agendamento' });
+  }, [editing, navigation]);
+
+  const activeProfessionals = data.professionals.filter((p) => p.active);
+  const activeServices = data.services.filter((s) => s.active);
+  const activeProducts = data.products.filter((p) => p.active);
+
+  const totalValue = useMemo(() => {
+    const serviceTotal = selectedServiceIds.reduce((sum, id) => {
+      const s = data.services.find((svc) => svc.id === id);
+      return sum + (s?.price ?? 0);
+    }, 0);
+    const productTotal = selectedProductIds.reduce((sum, id) => {
+      const p = data.products.find((prod) => prod.id === id);
+      return sum + (p?.price ?? 0);
+    }, 0);
+    return serviceTotal + productTotal;
+  }, [selectedServiceIds, selectedProductIds, data.services, data.products]);
+
+  const totalDuration = useMemo(() => {
+    return selectedServiceIds.reduce((sum, id) => {
+      const s = data.services.find((svc) => svc.id === id);
+      return sum + (s?.duration ?? 0);
+    }, 0);
+  }, [selectedServiceIds, data.services]);
+
+  const endTime = useMemo(() => {
+    if (!startTime || totalDuration === 0) return startTime;
+    return addMinutesToTime(startTime, totalDuration);
+  }, [startTime, totalDuration]);
+
+  function toggle(list: string[], setList: (v: string[]) => void, id: string) {
+    setList(list.includes(id) ? list.filter((i) => i !== id) : [...list, id]);
+  }
+
+  function validate() {
+    const errs: Record<string, string> = {};
+    if (!clientName.trim()) errs.clientName = 'Nome do cliente é obrigatório';
+    if (!professionalId) errs.professionalId = 'Selecione um profissional';
+    if (selectedServiceIds.length === 0) errs.services = 'Selecione ao menos um serviço';
+    if (!date.match(/^\d{4}-\d{2}-\d{2}$/)) errs.date = 'Data inválida (AAAA-MM-DD)';
+    if (!startTime.match(/^\d{2}:\d{2}$/)) errs.startTime = 'Hora inválida (HH:MM)';
+    setErrors(errs);
+    return Object.keys(errs).length === 0;
+  }
+
+  async function handleSave() {
+    if (!validate()) return;
+    setSaving(true);
+    try {
+      const payload = {
+        clientName: clientName.trim(),
+        clientPhone: clientPhone.trim(),
+        date,
+        startTime,
+        endTime,
+        professionalId,
+        serviceIds: selectedServiceIds,
+        productIds: selectedProductIds,
+        status: editing?.status ?? 'scheduled' as const,
+        totalValue,
+        paymentMethod,
+        notes: notes.trim(),
+      };
+      if (editing) await updateAppointment(editing.id, payload);
+      else await addAppointment(payload);
+      navigation.goBack();
+    } catch {
+      Alert.alert('Erro', 'Não foi possível salvar o agendamento.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <View style={styles.container}>
+      <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+        <FormField label="Nome do cliente" required value={clientName} onChangeText={setClientName} placeholder="Nome completo" error={errors.clientName} autoFocus />
+        <FormField
+          label="Telefone / WhatsApp"
+          value={clientPhone}
+          onChangeText={(t) => setClientPhone(maskPhoneBR(t))}
+          placeholder="(11) 99999-9999"
+          keyboardType="phone-pad"
+          maxLength={PHONE_MASK_MAX_LENGTH}
+        />
+
+        <View style={styles.row}>
+          <View style={styles.half}>
+            <FormField label="Data (AAAA-MM-DD)" required value={date} onChangeText={setDate} placeholder="2024-01-15" error={errors.date} />
+          </View>
+          <View style={styles.half}>
+            <FormField label="Horário (HH:MM)" required value={startTime} onChangeText={setStartTime} placeholder="09:00" error={errors.startTime} />
+          </View>
+        </View>
+
+        {endTime && endTime !== startTime && (
+          <View style={styles.durationInfo}>
+            <MaterialCommunityIcons name="clock-end" size={14} color={colors.info} />
+            <Text style={styles.durationText}>Término previsto: {endTime} ({totalDuration} min)</Text>
+          </View>
+        )}
+
+        <Text style={styles.sectionLabel}>Profissional <Text style={styles.required}>*</Text></Text>
+        {errors.professionalId && <Text style={styles.errorText}>{errors.professionalId}</Text>}
+        {activeProfessionals.length === 0 ? (
+          <Text style={styles.emptyText}>Nenhum profissional ativo cadastrado</Text>
+        ) : (
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
+            {activeProfessionals.map((p) => (
+              <PressableScale
+                key={p.id}
+                haptic="light"
+                scale={0.94}
+                onPress={() => setProfessionalId(p.id)}
+                style={[styles.chip, professionalId === p.id && styles.chipActive]}
+              >
+                <Text style={[styles.chipText, professionalId === p.id && styles.chipTextActive]}>{p.name.split(' ')[0]}</Text>
+              </PressableScale>
+            ))}
+          </ScrollView>
+        )}
+
+        <Text style={styles.sectionLabel}>Serviços <Text style={styles.required}>*</Text></Text>
+        {errors.services && <Text style={styles.errorText}>{errors.services}</Text>}
+        {activeServices.length === 0 ? (
+          <Text style={styles.emptyText}>Nenhum serviço ativo cadastrado</Text>
+        ) : (
+          activeServices.map((s) => {
+            const selected = selectedServiceIds.includes(s.id);
+            return (
+              <PressableScale
+                key={s.id}
+                haptic="light"
+                onPress={() => toggle(selectedServiceIds, setSelectedServiceIds, s.id)}
+                style={[styles.checkRow, selected && styles.checkRowActive]}
+              >
+                <View style={[styles.checkbox, selected && styles.checkboxActive]}>
+                  {selected && <MaterialCommunityIcons name="check" size={14} color="#fff" />}
+                </View>
+                <View style={styles.checkInfo}>
+                  <Text style={styles.checkName}>{s.name}</Text>
+                  <Text style={styles.checkMeta}>{s.duration} min</Text>
+                </View>
+                <Text style={styles.checkPrice}>{formatCurrency(s.price)}</Text>
+              </PressableScale>
+            );
+          })
+        )}
+
+        {activeProducts.length > 0 && (
+          <>
+            <Text style={styles.sectionLabel}>Produtos (opcional)</Text>
+            {activeProducts.map((p) => {
+              const selected = selectedProductIds.includes(p.id);
+              return (
+                <PressableScale
+                  key={p.id}
+                  haptic="light"
+                  onPress={() => toggle(selectedProductIds, setSelectedProductIds, p.id)}
+                  style={[styles.checkRow, selected && styles.checkRowActiveProduct]}
+                >
+                  <View style={[styles.checkbox, styles.checkboxProduct, selected && styles.checkboxProductActive]}>
+                    {selected && <MaterialCommunityIcons name="check" size={14} color="#fff" />}
+                  </View>
+                  <View style={styles.checkInfo}>
+                    <Text style={styles.checkName}>{p.name}</Text>
+                    <Text style={styles.checkMeta}>Estoque: {p.stock}</Text>
+                  </View>
+                  <Text style={styles.checkPrice}>{formatCurrency(p.price)}</Text>
+                </PressableScale>
+              );
+            })}
+          </>
+        )}
+
+        <Text style={styles.sectionLabel}>Forma de pagamento</Text>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
+          {PAYMENT_METHODS.map((pm) => (
+            <PressableScale
+              key={pm.value}
+              haptic="light"
+              scale={0.94}
+              onPress={() => setPaymentMethod(paymentMethod === pm.value ? undefined : pm.value)}
+              style={[styles.chip, paymentMethod === pm.value && styles.chipActive]}
+            >
+              <Text style={[styles.chipText, paymentMethod === pm.value && styles.chipTextActive]}>{pm.label}</Text>
+            </PressableScale>
+          ))}
+        </ScrollView>
+
+        <FormField label="Observações" value={notes} onChangeText={setNotes} placeholder="Anotações sobre o atendimento..." multiline numberOfLines={3} style={{ height: 80, textAlignVertical: 'top' }} />
+      </ScrollView>
+
+      <LinearGradient colors={colors.gradientGold} style={styles.bottomBar}>
+        <View style={styles.totalInline}>
+          <Text style={styles.totalLabel}>Total</Text>
+          <Text style={styles.totalValue}>{formatCurrency(totalValue)}</Text>
+        </View>
+        <PressableScale onPress={handleSave} haptic="medium" style={[styles.saveBtn, saving && { opacity: 0.6 }]}>
+          <Text style={styles.saveBtnText}>{saving ? 'Salvando...' : 'Salvar'}</Text>
+        </PressableScale>
+      </LinearGradient>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: { flex: 1, backgroundColor: colors.bg },
+  content: { padding: spacing.lg, paddingBottom: 24 },
+  row: { flexDirection: 'row', gap: spacing.md },
+  half: { flex: 1 },
+  durationInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: colors.infoSoft,
+    borderRadius: radius.md,
+    padding: 10,
+    marginBottom: spacing.lg,
+    marginTop: -spacing.sm,
+  },
+  durationText: { ...typography.smallBold, color: colors.info },
+  sectionLabel: { ...typography.overline, color: colors.textMuted, marginBottom: 10, marginTop: 4 },
+  required: { color: colors.danger },
+  errorText: { ...typography.small, color: colors.danger, marginBottom: 8 },
+  emptyText: { ...typography.small, color: colors.textMuted, marginBottom: 12 },
+  chipRow: { gap: 8, paddingRight: 8, paddingVertical: 4, marginBottom: spacing.md },
+  chip: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: radius.pill,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  chipActive: { backgroundColor: colors.ink, borderColor: colors.ink },
+  chipText: { ...typography.smallBold, color: colors.textSecondary },
+  chipTextActive: { color: '#fff' },
+  checkRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.surface,
+    borderRadius: radius.md,
+    padding: 12,
+    marginBottom: 8,
+    gap: 12,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  checkRowActive: { borderColor: colors.primary, backgroundColor: colors.primarySoft },
+  checkRowActiveProduct: { borderColor: '#8B5CF6', backgroundColor: '#F5F3FF' },
+  checkbox: {
+    width: 22,
+    height: 22,
+    borderRadius: 6,
+    borderWidth: 2,
+    borderColor: colors.borderStrong,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  checkboxActive: { backgroundColor: colors.primary, borderColor: colors.primary },
+  checkboxProduct: { borderColor: colors.borderStrong, borderRadius: 11 },
+  checkboxProductActive: { backgroundColor: '#8B5CF6', borderColor: '#8B5CF6' },
+  checkInfo: { flex: 1 },
+  checkName: { ...typography.bodyBold, color: colors.textPrimary, fontSize: 14 },
+  checkMeta: { ...typography.small, color: colors.textMuted, marginTop: 1 },
+  checkPrice: { ...typography.bodyBold, color: colors.success },
+  bottomBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
+    gap: spacing.md,
+  },
+  totalInline: { flex: 1 },
+  totalLabel: { fontSize: 11, color: 'rgba(255,255,255,0.85)', fontWeight: '700', letterSpacing: 1.2 },
+  totalValue: { fontSize: 22, fontWeight: '800', color: '#fff', letterSpacing: -0.5 },
+  saveBtn: {
+    backgroundColor: colors.ink,
+    paddingHorizontal: spacing['2xl'],
+    paddingVertical: 13,
+    borderRadius: radius.md,
+  },
+  saveBtnText: { ...typography.bodyBold, color: '#fff' },
+});
