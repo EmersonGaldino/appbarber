@@ -21,6 +21,7 @@
 | 06  | [Campanhas e Push Notifications](./06-campanhas-push.md) | Fluxo completo de criação, envio e exibição de campanhas via Expo Push API. |
 | 07  | [Banco de dados](./07-banco-de-dados.md)               | Schema SQLite, migrações idempotentes, mapeamento Row ↔ Domain. |
 | 08  | [Decisões técnicas](./08-decisoes-tecnicas.md)         | Registro informal das escolhas de design (ADRs). |
+| 09  | [Tenants e carrossel pre-login](./09-tenants-carrossel-pre-login.md) | Roadmap completo para seleção pública de estabelecimento antes do login do cliente e separação multi-tenant. |
 
 ---
 
