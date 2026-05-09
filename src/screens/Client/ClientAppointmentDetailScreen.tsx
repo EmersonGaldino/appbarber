@@ -1,7 +1,8 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, Alert } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { RouteProp, useNavigation, useRoute } from '@react-navigation/native';
 import { format, parseISO } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
@@ -9,7 +10,8 @@ import { useAppContext } from '../../context/AppContext';
 import { colors, radius, shadow, spacing, typography } from '../../theme';
 import { PressableScale } from '../../components/PressableScale';
 import { StatusBadge } from '../../components/StatusBadge';
-import { formatCurrency, paymentMethodLabel } from '../../utils/helpers';
+import { NotesDialog } from '../../components/NotesDialog';
+import { appointmentProductQuantity, formatCurrency, paymentMethodLabel } from '../../utils/helpers';
 import type { ClientHomeStackParamList } from '../../types';
 
 type Route = RouteProp<ClientHomeStackParamList, 'ClientAppointmentDetail'>;
@@ -17,7 +19,10 @@ type Route = RouteProp<ClientHomeStackParamList, 'ClientAppointmentDetail'>;
 export function ClientAppointmentDetailScreen() {
   const route = useRoute<Route>();
   const navigation = useNavigation<any>();
+  const insets = useSafeAreaInsets();
   const { data, updateAppointment } = useAppContext();
+  const [showFeedback, setShowFeedback] = useState(false);
+  const [savingFeedback, setSavingFeedback] = useState(false);
 
   // Sempre busca dado fresco para refletir alterações.
   const appt = useMemo(
@@ -27,6 +32,22 @@ export function ClientAppointmentDetailScreen() {
   const prof = data.professionals.find((p) => p.id === appt.professionalId);
   const services = data.services.filter((s) => appt.serviceIds.includes(s.id));
   const products = data.products.filter((p) => appt.productIds.includes(p.id));
+  const canFeedback = appt.status === 'completed';
+  const hasFeedback = !!(appt.clientFeedback && appt.clientFeedback.trim().length > 0);
+
+  async function handleSaveFeedback(value: string) {
+    if (savingFeedback) return;
+    setSavingFeedback(true);
+    try {
+      await updateAppointment(appt.id, { clientFeedback: value });
+      setShowFeedback(false);
+    } catch (e) {
+      console.error(e);
+      Alert.alert('Erro', 'Não foi possível salvar seu feedback.');
+    } finally {
+      setSavingFeedback(false);
+    }
+  }
 
   const dateLabel = (() => {
     try {
@@ -63,9 +84,23 @@ export function ClientAppointmentDetailScreen() {
 
   return (
     <View style={styles.container}>
-      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={[styles.content, { paddingTop: Math.max(insets.top, 12) + 4 }]}
+        showsVerticalScrollIndicator={false}
+      >
         <LinearGradient colors={colors.gradientHero} style={styles.hero}>
           <View style={styles.heroDecor} />
+          <View style={styles.heroHeader}>
+            <PressableScale
+              onPress={() => navigation.goBack()}
+              style={styles.heroBackBtn}
+              haptic="light"
+            >
+              <MaterialCommunityIcons name="chevron-left" size={22} color="#fff" />
+            </PressableScale>
+            <Text style={styles.heroTitle}>Atendimento</Text>
+            <View style={styles.heroBackBtnSpacer} />
+          </View>
           <View style={styles.heroTopRow}>
             <Text style={styles.heroDate}>{dateLabel}</Text>
             <StatusBadge status={appt.status} />
@@ -111,23 +146,30 @@ export function ClientAppointmentDetailScreen() {
           <>
             <Text style={styles.sectionTitle}>Produtos</Text>
             <View style={styles.card}>
-              {products.map((p, i) => (
-                <View
-                  key={p.id}
-                  style={[
-                    styles.lineRow,
-                    i < products.length - 1 && styles.lineRowDivider,
-                  ]}
-                >
-                  <View style={[styles.lineBullet, { backgroundColor: '#F5F3FF' }]}>
-                    <MaterialCommunityIcons name="shopping" size={14} color="#8B5CF6" />
+              {products.map((p, i) => {
+                const qty = appointmentProductQuantity(appt, p.id);
+                const lineTotal = p.price * qty;
+                return (
+                  <View
+                    key={p.id}
+                    style={[
+                      styles.lineRow,
+                      i < products.length - 1 && styles.lineRowDivider,
+                    ]}
+                  >
+                    <View style={[styles.lineBullet, { backgroundColor: '#F5F3FF' }]}>
+                      <MaterialCommunityIcons name="shopping" size={14} color="#8B5CF6" />
+                    </View>
+                    <View style={{ flex: 1, minWidth: 0 }}>
+                      <Text style={styles.lineName}>{p.name}</Text>
+                      <Text style={styles.lineMeta}>
+                        {qty} × {formatCurrency(p.price)}
+                      </Text>
+                    </View>
+                    <Text style={styles.linePrice}>{formatCurrency(lineTotal)}</Text>
                   </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.lineName}>{p.name}</Text>
-                  </View>
-                  <Text style={styles.linePrice}>{formatCurrency(p.price)}</Text>
-                </View>
-              ))}
+                );
+              })}
             </View>
           </>
         )}
@@ -155,6 +197,34 @@ export function ClientAppointmentDetailScreen() {
           </>
         ) : null}
 
+        {canFeedback && (
+          <>
+            <Text style={styles.sectionTitle}>Seu feedback</Text>
+            {hasFeedback ? (
+              <View style={styles.card}>
+                <Text style={styles.notesText}>{appt.clientFeedback}</Text>
+                <PressableScale
+                  onPress={() => setShowFeedback(true)}
+                  style={styles.feedbackEditBtn}
+                  haptic="light"
+                >
+                  <MaterialCommunityIcons name="pencil" size={14} color={colors.primary} />
+                  <Text style={styles.feedbackEditText}>Editar feedback</Text>
+                </PressableScale>
+              </View>
+            ) : (
+              <PressableScale
+                onPress={() => setShowFeedback(true)}
+                style={styles.feedbackBtn}
+                haptic="light"
+              >
+                <MaterialCommunityIcons name="message-text-outline" size={18} color={colors.primary} />
+                <Text style={styles.feedbackBtnText}>Adicionar feedback</Text>
+              </PressableScale>
+            )}
+          </>
+        )}
+
         {canCancel && (
           <PressableScale onPress={handleCancel} style={styles.cancelBtn} haptic="medium">
             <MaterialCommunityIcons name="calendar-remove" size={18} color={colors.danger} />
@@ -162,6 +232,25 @@ export function ClientAppointmentDetailScreen() {
           </PressableScale>
         )}
       </ScrollView>
+
+      <NotesDialog
+        visible={showFeedback}
+        title="Seu feedback"
+        subtitle="Conte como foi o atendimento. Sua opinião nos ajuda a melhorar."
+        inputLabel="Mensagem"
+        placeholder="Ex.: Adorei o corte e o atendimento foi excelente."
+        confirmLabel={hasFeedback ? 'Salvar' : 'Enviar'}
+        iconName="message-text-outline"
+        iconColor={colors.primary}
+        iconBackground={colors.primarySoft}
+        confirmBackground={colors.primary}
+        initialValue={appt.clientFeedback ?? ''}
+        loading={savingFeedback}
+        onCancel={() => {
+          if (!savingFeedback) setShowFeedback(false);
+        }}
+        onConfirm={handleSaveFeedback}
+      />
     </View>
   );
 }
@@ -184,6 +273,27 @@ const styles = StyleSheet.create({
     height: 160,
     borderRadius: 80,
     backgroundColor: 'rgba(212,162,76,0.1)',
+  },
+  heroHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: spacing.md,
+  },
+  heroBackBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(255,255,255,0.12)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  heroBackBtnSpacer: { width: 36, height: 36 },
+  heroTitle: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '800',
+    letterSpacing: 0.2,
   },
   heroTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   heroDate: {
@@ -249,6 +359,32 @@ const styles = StyleSheet.create({
   smallValue: { ...typography.smallBold, color: colors.textPrimary },
 
   notesText: { ...typography.body, color: colors.textPrimary, padding: spacing.md, lineHeight: 20 },
+
+  feedbackBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 14,
+    borderRadius: radius.lg,
+    backgroundColor: colors.primarySoft,
+    borderWidth: 1,
+    borderColor: 'rgba(212,162,76,0.35)',
+  },
+  feedbackBtnText: { color: colors.primary, fontWeight: '800' },
+  feedbackEditBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    alignSelf: 'flex-start',
+    paddingHorizontal: spacing.md,
+    paddingVertical: 8,
+    marginHorizontal: spacing.md,
+    marginBottom: spacing.md,
+    borderRadius: radius.pill,
+    backgroundColor: colors.primarySoft,
+  },
+  feedbackEditText: { color: colors.primary, fontSize: 12, fontWeight: '700' },
 
   cancelBtn: {
     flexDirection: 'row',

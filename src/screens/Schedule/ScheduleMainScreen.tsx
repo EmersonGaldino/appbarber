@@ -123,19 +123,48 @@ export function ScheduleMainScreen() {
             onPress={() => setSelectedProfessional('all')}
             style={[styles.profChip, selectedProfessional === 'all' && styles.profChipActive]}
           >
-            <Text style={[styles.profChipText, selectedProfessional === 'all' && styles.profChipTextActive]}>Todos</Text>
+            <MaterialCommunityIcons
+              name="account-multiple"
+              size={14}
+              color={selectedProfessional === 'all' ? '#fff' : colors.textSecondary}
+            />
+            <Text style={[styles.profChipText, selectedProfessional === 'all' && styles.profChipTextActive]}>
+              Todos
+            </Text>
           </PressableScale>
-          {activeProfessionals.map((p) => (
-            <PressableScale
-              key={p.id}
-              haptic="light"
-              scale={0.94}
-              onPress={() => setSelectedProfessional(p.id)}
-              style={[styles.profChip, selectedProfessional === p.id && styles.profChipActive]}
-            >
-              <Text style={[styles.profChipText, selectedProfessional === p.id && styles.profChipTextActive]}>{p.name.split(' ')[0]}</Text>
-            </PressableScale>
-          ))}
+          {activeProfessionals.map((p) => {
+            const isActive = selectedProfessional === p.id;
+            const parts = (p.name || '').trim().split(/\s+/).filter(Boolean);
+            const initial = (parts[0]?.[0] ?? '?').toUpperCase();
+            const shortName =
+              parts.length === 0
+                ? '?'
+                : parts.length === 1
+                ? parts[0]
+                : `${parts[0]} ${parts[parts.length - 1]}`;
+            return (
+              <PressableScale
+                key={p.id}
+                haptic="light"
+                scale={0.96}
+                onPress={() => setSelectedProfessional(p.id)}
+                style={[styles.profChip, isActive && styles.profChipActive]}
+              >
+                <View style={[styles.profChipAvatar, isActive && styles.profChipAvatarActive]}>
+                  <Text style={[styles.profChipInitial, isActive && styles.profChipInitialActive]}>
+                    {initial}
+                  </Text>
+                </View>
+                <Text
+                  style={[styles.profChipText, isActive && styles.profChipTextActive]}
+                  numberOfLines={1}
+                  ellipsizeMode="tail"
+                >
+                  {shortName}
+                </Text>
+              </PressableScale>
+            );
+          })}
         </ScrollView>
       )}
 
@@ -233,11 +262,43 @@ const styles = StyleSheet.create({
     ...(shadow.sm as any),
   },
   profFilter: { backgroundColor: colors.surface, borderBottomWidth: 1, borderBottomColor: colors.border },
-  profFilterContent: { paddingHorizontal: spacing.md, paddingVertical: 10, gap: 8 },
-  profChip: { paddingHorizontal: 14, paddingVertical: 7, borderRadius: radius.pill, backgroundColor: colors.bg },
-  profChipActive: { backgroundColor: colors.ink },
-  profChipText: { ...typography.smallBold, color: colors.textSecondary },
+  profFilterContent: { paddingHorizontal: spacing.md, paddingVertical: 10, gap: 8, alignItems: 'center' },
+  profChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: radius.pill,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    maxWidth: 170,
+    minWidth: 70,
+  },
+  profChipActive: {
+    backgroundColor: colors.ink,
+    borderColor: colors.ink,
+  },
+  profChipText: {
+    ...typography.smallBold,
+    color: colors.textPrimary,
+    flexShrink: 1,
+    minWidth: 0,
+  },
   profChipTextActive: { color: '#fff' },
+  profChipAvatar: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: colors.primarySoft,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  profChipAvatarActive: { backgroundColor: 'rgba(255,255,255,0.18)' },
+  profChipInitial: { fontSize: 11, fontWeight: '800', color: colors.primary },
+  profChipInitialActive: { color: colors.primaryLight },
   dayHeader: {
     paddingHorizontal: spacing.lg,
     paddingTop: spacing.md,

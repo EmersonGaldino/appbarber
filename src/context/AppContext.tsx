@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
-import { v4 as uuidv4 } from 'uuid';
+import { AppState, type AppStateStatus } from 'react-native';
 import {
   AppData,
   Campaign,
@@ -10,11 +10,15 @@ import {
   Transaction,
   User,
 } from '../types';
-import { defaultData, loadAppData, persistAppData, markSeededFlag } from '../database';
+import { defaultData } from '../utils/storage';
+import { appApi } from '../services/appApi';
+
+const FOREGROUND_REFRESH_INTERVAL_MS = 15_000;
 
 interface AppContextType {
   data: AppData;
   loading: boolean;
+  refreshData: () => Promise<void>;
 
   addUser: (user: Omit<User, 'id' | 'createdAt'>) => Promise<User>;
   updateUser: (id: string, user: Partial<User>) => Promise<void>;
@@ -51,303 +55,293 @@ const AppContext = createContext<AppContextType | null>(null);
 
 export function AppProvider({ children }: { children: React.ReactNode }) {
   const [data, setData] = useState<AppData>(defaultData);
-  const dataRef = useRef<AppData>(defaultData);
   const [loading, setLoading] = useState(true);
+  const refreshInFlight = useRef<Promise<void> | null>(null);
 
-  useEffect(() => {
-    dataRef.current = data;
-  }, [data]);
-
-  useEffect(() => {
-    loadAppData()
+  const refreshData = useCallback(async () => {
+    if (refreshInFlight.current) return refreshInFlight.current;
+    const promise = appApi
+      .getAppData()
       .then((loaded) => {
-        dataRef.current = loaded;
         setData(loaded);
       })
       .catch((e) => {
-        console.error('Falha ao carregar dados:', e);
+        console.warn('Falha ao sincronizar com a API:', e);
       })
-      .finally(() => setLoading(false));
+      .finally(() => {
+        refreshInFlight.current = null;
+      });
+    refreshInFlight.current = promise;
+    return promise;
   }, []);
 
-  const persistChain = useRef(Promise.resolve());
+  useEffect(() => {
+    refreshData().finally(() => setLoading(false));
+  }, [refreshData]);
 
-  /** Atualiza estado + SQLite a partir do último snapshot; fila gravações para evitar condição de corrida. */
-  const commit = useCallback(async (updater: (prev: AppData) => AppData) => {
-    await new Promise<void>((resolve, reject) => {
-      persistChain.current = persistChain.current
-        .then(async () => {
-          const next = updater(dataRef.current);
-          dataRef.current = next;
-          await persistAppData(next);
-          setData(next);
-        })
-        .then(() => resolve())
-        .catch(reject);
-    });
-  }, []);
+  useEffect(() => {
+    const handleAppStateChange = (state: AppStateStatus) => {
+      if (state === 'active') {
+        refreshData();
+      }
+    };
+    const sub = AppState.addEventListener('change', handleAppStateChange);
+    return () => sub.remove();
+  }, [refreshData]);
+
+  useEffect(() => {
+    const id = setInterval(() => {
+      if (AppState.currentState === 'active') {
+        refreshData();
+      }
+    }, FOREGROUND_REFRESH_INTERVAL_MS);
+    return () => clearInterval(id);
+  }, [refreshData]);
 
   const addUser = useCallback(async (user: Omit<User, 'id' | 'createdAt'>): Promise<User> => {
-    const newItem: User = {
-      ...user,
-      id: uuidv4(),
-      createdAt: new Date().toISOString(),
-    };
-    await commit((prev) => ({
-      ...prev,
-      users: [...prev.users, newItem],
-    }));
-    return newItem;
-  }, [commit]);
+    const created = await appApi.createUser(user);
+    setData((prev) => ({ ...prev, users: [...prev.users, created] }));
+    refreshData();
+    return created;
+  }, [refreshData]);
 
   const updateUser = useCallback(
     async (id: string, user: Partial<User>) => {
-      await commit((prev) => ({
+      const updated = await appApi.updateUser(id, user);
+      setData((prev) => ({
         ...prev,
-        users: prev.users.map((u) => (u.id === id ? { ...u, ...user } : u)),
+        users: prev.users.map((u) => (u.id === id ? updated : u)),
       }));
+      refreshData();
     },
-    [commit]
+    [refreshData]
   );
 
   const deleteUser = useCallback(
     async (id: string) => {
-      await commit((prev) => ({
+      await appApi.deleteUser(id);
+      setData((prev) => ({
         ...prev,
         users: prev.users.filter((u) => u.id !== id),
       }));
+      refreshData();
     },
-    [commit]
+    [refreshData]
   );
 
   const addService = useCallback(async (service: Omit<Service, 'id' | 'createdAt'>) => {
-    const newItem: Service = {
-      ...service,
-      id: uuidv4(),
-      createdAt: new Date().toISOString(),
-    };
-    await commit((prev) => ({
+    const created = await appApi.createService(service);
+    setData((prev) => ({
       ...prev,
-      services: [...prev.services, newItem],
+      services: [...prev.services, created],
     }));
-  }, [commit]);
+    refreshData();
+  }, [refreshData]);
 
   const updateService = useCallback(
     async (id: string, service: Partial<Service>) => {
-      await commit((prev) => ({
+      const updated = await appApi.updateService(id, service);
+      setData((prev) => ({
         ...prev,
-        services: prev.services.map((s) => (s.id === id ? { ...s, ...service } : s)),
+        services: prev.services.map((s) => (s.id === id ? updated : s)),
       }));
+      refreshData();
     },
-    [commit]
+    [refreshData]
   );
 
   const deleteService = useCallback(
     async (id: string) => {
-      await commit((prev) => ({
+      await appApi.deleteService(id);
+      setData((prev) => ({
         ...prev,
         services: prev.services.filter((s) => s.id !== id),
       }));
+      refreshData();
     },
-    [commit]
+    [refreshData]
   );
 
   const addProfessional = useCallback(async (professional: Omit<Professional, 'id' | 'createdAt'>): Promise<Professional> => {
-    const newItem: Professional = {
-      ...professional,
-      id: uuidv4(),
-      createdAt: new Date().toISOString(),
-    };
-    await commit((prev) => ({
+    const created = await appApi.createProfessional(professional);
+    setData((prev) => ({
       ...prev,
-      professionals: [...prev.professionals, newItem],
+      professionals: [...prev.professionals, created],
     }));
-    return newItem;
-  }, [commit]);
+    refreshData();
+    return created;
+  }, [refreshData]);
 
   const updateProfessional = useCallback(
     async (id: string, professional: Partial<Professional>) => {
-      await commit((prev) => ({
+      const updated = await appApi.updateProfessional(id, professional);
+      setData((prev) => ({
         ...prev,
-        professionals: prev.professionals.map((p) => (p.id === id ? { ...p, ...professional } : p)),
+        professionals: prev.professionals.map((p) => (p.id === id ? updated : p)),
       }));
+      refreshData();
     },
-    [commit]
+    [refreshData]
   );
 
   const deleteProfessional = useCallback(
     async (id: string) => {
-      await commit((prev) => ({
+      await appApi.deleteProfessional(id);
+      setData((prev) => ({
         ...prev,
         professionals: prev.professionals.filter((p) => p.id !== id),
         users: prev.users.filter((u) => u.professionalId !== id),
       }));
+      refreshData();
     },
-    [commit]
+    [refreshData]
   );
 
   const addProduct = useCallback(async (product: Omit<Product, 'id' | 'createdAt'>) => {
-    const newItem: Product = {
-      ...product,
-      id: uuidv4(),
-      createdAt: new Date().toISOString(),
-    };
-    await commit((prev) => ({
+    const created = await appApi.createProduct(product);
+    setData((prev) => ({
       ...prev,
-      products: [...prev.products, newItem],
+      products: [...prev.products, created],
     }));
-  }, [commit]);
+    refreshData();
+  }, [refreshData]);
 
   const updateProduct = useCallback(
     async (id: string, product: Partial<Product>) => {
-      await commit((prev) => ({
+      const updated = await appApi.updateProduct(id, product);
+      setData((prev) => ({
         ...prev,
-        products: prev.products.map((p) => (p.id === id ? { ...p, ...product } : p)),
+        products: prev.products.map((p) => (p.id === id ? updated : p)),
       }));
+      refreshData();
     },
-    [commit]
+    [refreshData]
   );
 
   const deleteProduct = useCallback(
     async (id: string) => {
-      await commit((prev) => ({
+      await appApi.deleteProduct(id);
+      setData((prev) => ({
         ...prev,
         products: prev.products.filter((p) => p.id !== id),
       }));
+      refreshData();
     },
-    [commit]
+    [refreshData]
   );
 
   const addAppointment = useCallback(async (appointment: Omit<Appointment, 'id' | 'createdAt'>) => {
-    const newItem: Appointment = { ...appointment, id: uuidv4(), createdAt: new Date().toISOString() };
-    await commit((prev) => ({
+    const created = await appApi.createAppointment(appointment);
+    setData((prev) => ({
       ...prev,
-      appointments: [...prev.appointments, newItem],
+      appointments: [...prev.appointments, created],
     }));
-  }, [commit]);
+    refreshData();
+  }, [refreshData]);
 
   const updateAppointment = useCallback(
     async (id: string, appointment: Partial<Appointment>) => {
-      await commit((prev) => {
-        const existing = prev.appointments.find((a) => a.id === id);
-        let transactions = prev.transactions;
-
-        if (appointment.status === 'completed' && existing?.status !== 'completed') {
-          const updated: Appointment = { ...existing!, ...appointment };
-          const tx: Transaction = {
-            id: uuidv4(),
-            type: 'income',
-            category: 'service',
-            description: `Atendimento - ${updated.clientName}`,
-            amount: updated.totalValue,
-            date: updated.date,
-            paymentMethod: updated.paymentMethod,
-            appointmentId: id,
-            createdAt: new Date().toISOString(),
-          };
-          transactions = [...prev.transactions, tx];
-        }
-
-        return {
-          ...prev,
-          transactions,
-          appointments: prev.appointments.map((a) => (a.id === id ? { ...a, ...appointment } : a)),
-        };
-      });
+      await appApi.updateAppointment(id, appointment);
+      await refreshData();
     },
-    [commit]
+    [refreshData]
   );
 
   const deleteAppointment = useCallback(
     async (id: string) => {
-      await commit((prev) => ({
+      await appApi.deleteAppointment(id);
+      setData((prev) => ({
         ...prev,
         appointments: prev.appointments.filter((a) => a.id !== id),
       }));
+      refreshData();
     },
-    [commit]
+    [refreshData]
   );
 
   const addTransaction = useCallback(async (transaction: Omit<Transaction, 'id' | 'createdAt'>) => {
-    const newItem: Transaction = {
-      ...transaction,
-      id: uuidv4(),
-      createdAt: new Date().toISOString(),
-    };
-    await commit((prev) => ({
+    const created = await appApi.createTransaction(transaction);
+    setData((prev) => ({
       ...prev,
-      transactions: [...prev.transactions, newItem],
+      transactions: [...prev.transactions, created],
     }));
-  }, [commit]);
+    refreshData();
+  }, [refreshData]);
 
   const updateTransaction = useCallback(
     async (id: string, transaction: Partial<Transaction>) => {
-      await commit((prev) => ({
+      const updated = await appApi.updateTransaction(id, transaction);
+      setData((prev) => ({
         ...prev,
-        transactions: prev.transactions.map((t) => (t.id === id ? { ...t, ...transaction } : t)),
+        transactions: prev.transactions.map((t) => (t.id === id ? updated : t)),
       }));
+      refreshData();
     },
-    [commit]
+    [refreshData]
   );
 
   const deleteTransaction = useCallback(
     async (id: string) => {
-      await commit((prev) => ({
+      await appApi.deleteTransaction(id);
+      setData((prev) => ({
         ...prev,
         transactions: prev.transactions.filter((t) => t.id !== id),
       }));
+      refreshData();
     },
-    [commit]
+    [refreshData]
   );
 
   const addCampaign = useCallback(
     async (campaign: Omit<Campaign, 'id' | 'createdAt'>): Promise<Campaign> => {
-      const newItem: Campaign = {
-        ...campaign,
-        id: uuidv4(),
-        createdAt: new Date().toISOString(),
-      };
-      await commit((prev) => ({
+      const created = await appApi.createCampaign(campaign);
+      setData((prev) => ({
         ...prev,
-        campaigns: [newItem, ...(prev.campaigns ?? [])],
+        campaigns: [created, ...(prev.campaigns ?? [])],
       }));
-      return newItem;
+      refreshData();
+      return created;
     },
-    [commit]
+    [refreshData]
   );
 
   const updateCampaign = useCallback(
     async (id: string, campaign: Partial<Campaign>) => {
-      await commit((prev) => ({
+      const updated = await appApi.updateCampaign(id, campaign);
+      setData((prev) => ({
         ...prev,
         campaigns: (prev.campaigns ?? []).map((c) =>
-          c.id === id ? { ...c, ...campaign } : c
+          c.id === id ? updated : c
         ),
       }));
+      refreshData();
     },
-    [commit]
+    [refreshData]
   );
 
   const deleteCampaign = useCallback(
     async (id: string) => {
-      await commit((prev) => ({
+      await appApi.deleteCampaign(id);
+      setData((prev) => ({
         ...prev,
         campaigns: (prev.campaigns ?? []).filter((c) => c.id !== id),
       }));
+      refreshData();
     },
-    [commit]
+    [refreshData]
   );
 
   const clearAllData = useCallback(async () => {
-    await markSeededFlag();
-    await commit(() => defaultData);
-  }, [commit]);
+    const cleared = await appApi.clearAppData();
+    setData(cleared);
+  }, []);
 
   return (
     <AppContext.Provider
       value={{
         data,
         loading,
+        refreshData,
         addUser, updateUser, deleteUser,
         addService, updateService, deleteService,
         addProfessional, updateProfessional, deleteProfessional,

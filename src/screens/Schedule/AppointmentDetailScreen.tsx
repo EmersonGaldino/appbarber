@@ -6,12 +6,30 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import Animated, { FadeInDown, FadeIn } from 'react-native-reanimated';
 import { useAppContext } from '../../context/AppContext';
-import { ScheduleStackParamList, Appointment } from '../../types';
-import { formatCurrency, formatDate, paymentMethodLabel } from '../../utils/helpers';
+import { ScheduleStackParamList, Appointment, User } from '../../types';
+import { appointmentProductQuantity, formatCurrency, formatDate, paymentMethodLabel } from '../../utils/helpers';
 import { StatusBadge } from '../../components/StatusBadge';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
+import { CompleteAppointmentDialog } from '../../components/CompleteAppointmentDialog';
 import { PressableScale } from '../../components/PressableScale';
+import { sendAppointmentCompletedPush } from '../../services/pushNotifications';
 import { colors, radius, shadow, spacing, typography } from '../../theme';
+
+function normalizePhone(phone: string | null | undefined): string {
+  return (phone ?? '').replace(/\D/g, '');
+}
+
+function findClientUser(users: User[], appt: Appointment): User | undefined {
+  if (appt.clientUserId) {
+    const direct = users.find((u) => u.id === appt.clientUserId);
+    if (direct) return direct;
+  }
+  const phone = normalizePhone(appt.clientPhone);
+  if (!phone) return undefined;
+  return users.find(
+    (u) => u.role === 'client' && normalizePhone(u.phone) === phone
+  );
+}
 
 type Nav = StackNavigationProp<ScheduleStackParamList, 'AppointmentDetail'>;
 type Route = RouteProp<ScheduleStackParamList, 'AppointmentDetail'>;
@@ -27,17 +45,61 @@ export function AppointmentDetailScreen() {
   const route = useRoute<Route>();
   const { data, updateAppointment, deleteAppointment } = useAppContext();
   const [showDelete, setShowDelete] = useState(false);
+  const [showComplete, setShowComplete] = useState(false);
+  const [completing, setCompleting] = useState(false);
 
   const appt = data.appointments.find((a) => a.id === route.params.appointment.id) ?? route.params.appointment;
   const professional = data.professionals.find((p) => p.id === appt.professionalId);
   const services = data.services.filter((s) => appt.serviceIds.includes(s.id));
   const products = data.products.filter((p) => appt.productIds.includes(p.id));
 
+  async function notifyClientOfCompletion(notes: string) {
+    const client = findClientUser(data.users, appt);
+    if (!client?.pushToken) return;
+
+    const summary = services.map((s) => s.name).join(' + ') || undefined;
+    const result = await sendAppointmentCompletedPush({
+      token: client.pushToken,
+      clientName: appt.clientName,
+      professionalName: professional?.name,
+      serviceSummary: summary,
+      notes: notes || undefined,
+    });
+    if (!result.ok) {
+      console.warn('Falha ao notificar cliente:', result.error);
+    }
+  }
+
   async function changeStatus(status: Appointment['status']) {
-    if (status === 'completed' && !appt.paymentMethod) {
-      Alert.alert('Atenção', 'Recomendamos informar a forma de pagamento antes de concluir.');
+    if (status === 'completed') {
+      if (!appt.paymentMethod) {
+        Alert.alert('Atenção', 'Recomendamos informar a forma de pagamento antes de concluir.');
+      }
+      setShowComplete(true);
+      return;
     }
     await updateAppointment(appt.id, { status });
+  }
+
+  async function handleConfirmComplete(notes: string) {
+    if (completing) return;
+    setCompleting(true);
+    try {
+      const patch: Partial<Appointment> = { status: 'completed' };
+      if (notes && notes !== (appt.notes ?? '')) {
+        patch.notes = notes;
+      } else if (!notes && appt.notes) {
+        patch.notes = appt.notes;
+      }
+      await updateAppointment(appt.id, patch);
+      await notifyClientOfCompletion(notes);
+      setShowComplete(false);
+    } catch (e) {
+      console.error(e);
+      Alert.alert('Erro', 'Não foi possível concluir o atendimento.');
+    } finally {
+      setCompleting(false);
+    }
   }
 
   return (
@@ -87,7 +149,7 @@ export function AppointmentDetailScreen() {
               <View style={styles.lineIcon}>
                 <MaterialCommunityIcons name="scissors-cutting" size={14} color={colors.primary} />
               </View>
-              <Text style={styles.lineItemName}>{s.name}</Text>
+              <Text style={[styles.lineItemName, styles.lineItemNameGrow]}>{s.name}</Text>
               <Text style={styles.lineItemPrice}>{formatCurrency(s.price)}</Text>
             </View>
           ))}
@@ -97,15 +159,24 @@ export function AppointmentDetailScreen() {
       {products.length > 0 && (
         <Animated.View entering={FadeInDown.delay(200).springify()} style={styles.section}>
           <Text style={styles.sectionTitle}>Produtos</Text>
-          {products.map((p) => (
-            <View key={p.id} style={styles.lineItem}>
-              <View style={[styles.lineIcon, { backgroundColor: '#EDE9FE' }]}>
-                <MaterialCommunityIcons name="shopping" size={14} color="#6D28D9" />
+          {products.map((p) => {
+            const qty = appointmentProductQuantity(appt, p.id);
+            const lineTotal = p.price * qty;
+            return (
+              <View key={p.id} style={styles.lineItem}>
+                <View style={[styles.lineIcon, { backgroundColor: '#EDE9FE' }]}>
+                  <MaterialCommunityIcons name="shopping" size={14} color="#6D28D9" />
+                </View>
+                <View style={styles.lineItemTextCol}>
+                  <Text style={styles.lineItemName}>{p.name}</Text>
+                  <Text style={styles.lineItemMeta}>
+                    {qty} × {formatCurrency(p.price)}
+                  </Text>
+                </View>
+                <Text style={styles.lineItemPrice}>{formatCurrency(lineTotal)}</Text>
               </View>
-              <Text style={styles.lineItemName}>{p.name}</Text>
-              <Text style={styles.lineItemPrice}>{formatCurrency(p.price)}</Text>
-            </View>
-          ))}
+            );
+          })}
         </Animated.View>
       )}
 
@@ -123,6 +194,16 @@ export function AppointmentDetailScreen() {
         <Animated.View entering={FadeInDown.delay(320).springify()} style={styles.section}>
           <Text style={styles.sectionTitle}>Observações</Text>
           <Text style={styles.notesText}>{appt.notes}</Text>
+        </Animated.View>
+      ) : null}
+
+      {appt.clientFeedback ? (
+        <Animated.View entering={FadeInDown.delay(360).springify()} style={[styles.section, styles.feedbackSection]}>
+          <View style={styles.feedbackHeader}>
+            <MaterialCommunityIcons name="message-text" size={16} color={colors.primary} />
+            <Text style={styles.feedbackTitle}>Feedback do cliente</Text>
+          </View>
+          <Text style={styles.notesText}>{appt.clientFeedback}</Text>
         </Animated.View>
       ) : null}
 
@@ -175,6 +256,16 @@ export function AppointmentDetailScreen() {
         }}
         onCancel={() => setShowDelete(false)}
         confirmLabel="Excluir"
+      />
+
+      <CompleteAppointmentDialog
+        visible={showComplete}
+        initialNotes={appt.notes ?? ''}
+        loading={completing}
+        onCancel={() => {
+          if (!completing) setShowComplete(false);
+        }}
+        onConfirm={handleConfirmComplete}
       />
     </ScrollView>
   );
@@ -276,7 +367,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  lineItemName: { flex: 1, ...typography.body, color: colors.textPrimary },
+  lineItemTextCol: { flex: 1, minWidth: 0 },
+  lineItemName: { ...typography.body, color: colors.textPrimary },
+  lineItemNameGrow: { flex: 1 },
+  lineItemMeta: { ...typography.small, color: colors.textMuted, marginTop: 2 },
   lineItemPrice: { ...typography.bodyBold, color: colors.success },
 
   totalBox: {
@@ -292,6 +386,22 @@ const styles = StyleSheet.create({
   totalValue: { fontSize: 32, fontWeight: '800', color: '#fff', marginTop: 4, letterSpacing: -0.8 },
 
   notesText: { ...typography.body, color: colors.textSecondary, lineHeight: 22 },
+
+  feedbackSection: {
+    backgroundColor: colors.primarySoft,
+    borderWidth: 1,
+    borderColor: 'rgba(212,162,76,0.35)',
+  },
+  feedbackHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 8,
+  },
+  feedbackTitle: {
+    ...typography.overline,
+    color: colors.primary,
+  },
 
   actionsTitle: { ...typography.overline, color: colors.textMuted, marginBottom: 10, paddingHorizontal: 4 },
   actionsGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },

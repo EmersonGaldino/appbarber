@@ -1,6 +1,6 @@
 import { format, parseISO, isValid } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
-import { PaymentMethod, TransactionCategory } from '../types';
+import { Appointment, PaymentMethod, TransactionCategory } from '../types';
 
 export function maskPhoneBR(value: string): string {
   const digits = (value ?? '').replace(/\D/g, '').slice(0, 11);
@@ -100,6 +100,18 @@ export function addMinutesToTime(time: string, minutes: number): string {
   const nh = Math.floor(total / 60) % 24;
   const nm = total % 60;
   return `${nh.toString().padStart(2, '0')}:${nm.toString().padStart(2, '0')}`;
+}
+
+/** Quantidade de um produto no agendamento (registros antigos sem mapa usam 1). */
+export function appointmentProductQuantity(
+  appt: Pick<Appointment, 'productQuantities'> & { productIds?: string[] },
+  productId: string
+): number {
+  const raw = appt.productQuantities?.[productId];
+  if (typeof raw === 'number' && Number.isFinite(raw) && raw > 0) {
+    return Math.min(9999, Math.max(1, Math.floor(raw)));
+  }
+  return 1;
 }
 
 export const DAYS_OF_WEEK = [

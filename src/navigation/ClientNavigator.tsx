@@ -30,7 +30,7 @@ function HomeNavigator() {
       <HomeStack.Screen
         name="ClientAppointmentDetail"
         component={ClientAppointmentDetailScreen}
-        options={{ title: 'Atendimento' }}
+        options={{ headerShown: false }}
       />
     </HomeStack.Navigator>
   );

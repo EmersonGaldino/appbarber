@@ -228,23 +228,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, [data.users, user, logout]);
 
-  // Após autenticar, garante que o usuário tenha um Expo Push Token salvo no perfil.
+  // Após autenticar, pede permissão de notificação e salva o Expo Push Token (com pequeno atraso para o diálogo do sistema não competir com a transição da tela de login).
   useEffect(() => {
     if (!user) return;
     let cancelled = false;
-    (async () => {
-      try {
-        const pushToken = await registerForPushNotificationsAsync();
-        if (cancelled) return;
-        if (pushToken && pushToken !== user.pushToken) {
-          await updateUser(user.id, { pushToken });
+    const timer = setTimeout(() => {
+      (async () => {
+        try {
+          const pushToken = await registerForPushNotificationsAsync();
+          if (cancelled) return;
+          if (pushToken && pushToken !== user.pushToken) {
+            await updateUser(user.id, { pushToken });
+          }
+        } catch (e) {
+          console.warn('Push registration failed:', e);
         }
-      } catch (e) {
-        console.warn('Push registration failed:', e);
-      }
-    })();
+      })();
+    }, 800);
     return () => {
       cancelled = true;
+      clearTimeout(timer);
     };
   }, [user, updateUser]);
 

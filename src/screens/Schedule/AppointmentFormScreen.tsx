@@ -5,14 +5,34 @@ import { StackNavigationProp } from '@react-navigation/stack';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useAppContext } from '../../context/AppContext';
-import { ScheduleStackParamList, PaymentMethod } from '../../types';
+import { ScheduleStackParamList, PaymentMethod, Appointment, Product } from '../../types';
 import { FormField } from '../../components/FormField';
 import { PressableScale } from '../../components/PressableScale';
-import { formatCurrency, PAYMENT_METHODS, addMinutesToTime, maskPhoneBR, PHONE_MASK_MAX_LENGTH } from '../../utils/helpers';
+import {
+  formatCurrency,
+  PAYMENT_METHODS,
+  addMinutesToTime,
+  maskPhoneBR,
+  PHONE_MASK_MAX_LENGTH,
+  appointmentProductQuantity,
+} from '../../utils/helpers';
 import { colors, radius, shadow, spacing, typography } from '../../theme';
 
 type Nav = StackNavigationProp<ScheduleStackParamList, 'AppointmentForm'>;
 type Route = RouteProp<ScheduleStackParamList, 'AppointmentForm'>;
+
+function initialProductQty(editing?: Appointment): Record<string, number> {
+  if (!editing?.productIds?.length) return {};
+  const out: Record<string, number> = {};
+  for (const id of editing.productIds) {
+    out[id] = appointmentProductQuantity(editing, id);
+  }
+  return out;
+}
+
+function maxQtyForProduct(p: Product): number {
+  return p.stock > 0 ? p.stock : 9999;
+}
 
 export function AppointmentFormScreen() {
   const navigation = useNavigation<Nav>();
@@ -26,7 +46,7 @@ export function AppointmentFormScreen() {
   const [startTime, setStartTime] = useState(editing?.startTime ?? '09:00');
   const [professionalId, setProfessionalId] = useState(editing?.professionalId ?? route.params?.professionalId ?? '');
   const [selectedServiceIds, setSelectedServiceIds] = useState<string[]>(editing?.serviceIds ?? []);
-  const [selectedProductIds, setSelectedProductIds] = useState<string[]>(editing?.productIds ?? []);
+  const [productQty, setProductQty] = useState<Record<string, number>>(() => initialProductQty(editing));
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod | undefined>(editing?.paymentMethod);
   const [notes, setNotes] = useState(editing?.notes ?? '');
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -40,17 +60,22 @@ export function AppointmentFormScreen() {
   const activeServices = data.services.filter((s) => s.active);
   const activeProducts = data.products.filter((p) => p.active);
 
-  const totalValue = useMemo(() => {
-    const serviceTotal = selectedServiceIds.reduce((sum, id) => {
+  const serviceTotal = useMemo(() => {
+    return selectedServiceIds.reduce((sum, id) => {
       const s = data.services.find((svc) => svc.id === id);
       return sum + (s?.price ?? 0);
     }, 0);
-    const productTotal = selectedProductIds.reduce((sum, id) => {
+  }, [selectedServiceIds, data.services]);
+
+  const productTotal = useMemo(() => {
+    return Object.entries(productQty).reduce((sum, [id, qty]) => {
+      if (!qty || qty <= 0) return sum;
       const p = data.products.find((prod) => prod.id === id);
-      return sum + (p?.price ?? 0);
+      return sum + (p?.price ?? 0) * qty;
     }, 0);
-    return serviceTotal + productTotal;
-  }, [selectedServiceIds, selectedProductIds, data.services, data.products]);
+  }, [productQty, data.products]);
+
+  const totalValue = serviceTotal + productTotal;
 
   const totalDuration = useMemo(() => {
     return selectedServiceIds.reduce((sum, id) => {
@@ -91,7 +116,10 @@ export function AppointmentFormScreen() {
         endTime,
         professionalId,
         serviceIds: selectedServiceIds,
-        productIds: selectedProductIds,
+        productIds: Object.keys(productQty).filter((id) => (productQty[id] ?? 0) > 0),
+        productQuantities: Object.fromEntries(
+          Object.entries(productQty).filter(([, q]) => q > 0)
+        ),
         status: editing?.status ?? 'scheduled' as const,
         totalValue,
         paymentMethod,
@@ -187,23 +215,89 @@ export function AppointmentFormScreen() {
           <>
             <Text style={styles.sectionLabel}>Produtos (opcional)</Text>
             {activeProducts.map((p) => {
-              const selected = selectedProductIds.includes(p.id);
+              const qty = productQty[p.id] ?? 0;
+              const selected = qty > 0;
+              const lineTotal = selected ? p.price * qty : p.price;
+              const maxQ = maxQtyForProduct(p);
               return (
-                <PressableScale
+                <View
                   key={p.id}
-                  haptic="light"
-                  onPress={() => toggle(selectedProductIds, setSelectedProductIds, p.id)}
                   style={[styles.checkRow, selected && styles.checkRowActiveProduct]}
                 >
-                  <View style={[styles.checkbox, styles.checkboxProduct, selected && styles.checkboxProductActive]}>
-                    {selected && <MaterialCommunityIcons name="check" size={14} color="#fff" />}
-                  </View>
-                  <View style={styles.checkInfo}>
+                  <PressableScale
+                    haptic="light"
+                    onPress={() => {
+                      setProductQty((prev) => {
+                        const cur = prev[p.id] ?? 0;
+                        if (cur > 0) {
+                          const { [p.id]: _, ...rest } = prev;
+                          return rest;
+                        }
+                        return { ...prev, [p.id]: 1 };
+                      });
+                    }}
+                  >
+                    <View style={[styles.checkbox, styles.checkboxProduct, selected && styles.checkboxProductActive]}>
+                      {selected && <MaterialCommunityIcons name="check" size={14} color="#fff" />}
+                    </View>
+                  </PressableScale>
+                  <PressableScale
+                    haptic="light"
+                    style={styles.checkInfo}
+                    onPress={() => {
+                      setProductQty((prev) => {
+                        const cur = prev[p.id] ?? 0;
+                        if (cur > 0) {
+                          const { [p.id]: _, ...rest } = prev;
+                          return rest;
+                        }
+                        return { ...prev, [p.id]: 1 };
+                      });
+                    }}
+                  >
                     <Text style={styles.checkName}>{p.name}</Text>
-                    <Text style={styles.checkMeta}>Estoque: {p.stock}</Text>
-                  </View>
-                  <Text style={styles.checkPrice}>{formatCurrency(p.price)}</Text>
-                </PressableScale>
+                    <Text style={styles.checkMeta}>
+                      Estoque: {p.stock}
+                      {selected && p.stock > 0 ? ` · até ${maxQ} un.` : ''}
+                    </Text>
+                  </PressableScale>
+                  {selected ? (
+                    <View style={styles.qtyStepper}>
+                      <PressableScale
+                        haptic="light"
+                        onPress={() =>
+                          setProductQty((prev) => {
+                            const cur = prev[p.id] ?? 1;
+                            if (cur <= 1) {
+                              const { [p.id]: _, ...rest } = prev;
+                              return rest;
+                            }
+                            return { ...prev, [p.id]: cur - 1 };
+                          })
+                        }
+                        style={styles.qtyStepBtn}
+                      >
+                        <MaterialCommunityIcons name="minus" size={18} color={colors.textPrimary} />
+                      </PressableScale>
+                      <Text style={styles.qtyStepValue}>{qty}</Text>
+                      <PressableScale
+                        haptic="light"
+                        onPress={() =>
+                          setProductQty((prev) => {
+                            const cur = prev[p.id] ?? 1;
+                            return { ...prev, [p.id]: Math.min(maxQ, cur + 1) };
+                          })
+                        }
+                        style={styles.qtyStepBtn}
+                      >
+                        <MaterialCommunityIcons name="plus" size={18} color={colors.textPrimary} />
+                      </PressableScale>
+                    </View>
+                  ) : null}
+                  <Text style={styles.checkPrice}>
+                    {formatCurrency(selected ? lineTotal : p.price)}
+                  </Text>
+                </View>
               );
             })}
           </>
@@ -230,6 +324,12 @@ export function AppointmentFormScreen() {
       <LinearGradient colors={colors.gradientGold} style={styles.bottomBar}>
         <View style={styles.totalInline}>
           <Text style={styles.totalLabel}>Total</Text>
+          {(serviceTotal > 0 || productTotal > 0) && (
+            <Text style={styles.totalBreakdown} numberOfLines={2}>
+              Serviços {formatCurrency(serviceTotal)}
+              {productTotal > 0 ? ` · Produtos ${formatCurrency(productTotal)}` : ''}
+            </Text>
+          )}
           <Text style={styles.totalValue}>{formatCurrency(totalValue)}</Text>
         </View>
         <PressableScale onPress={handleSave} haptic="medium" style={[styles.saveBtn, saving && { opacity: 0.6 }]}>
@@ -310,7 +410,34 @@ const styles = StyleSheet.create({
   },
   totalInline: { flex: 1 },
   totalLabel: { fontSize: 11, color: 'rgba(255,255,255,0.85)', fontWeight: '700', letterSpacing: 1.2 },
+  totalBreakdown: {
+    fontSize: 10,
+    color: 'rgba(255,255,255,0.78)',
+    fontWeight: '600',
+    marginTop: 2,
+  },
   totalValue: { fontSize: 22, fontWeight: '800', color: '#fff', letterSpacing: -0.5 },
+  qtyStepper: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(139,92,246,0.12)',
+    borderRadius: radius.pill,
+    paddingHorizontal: 4,
+    marginRight: 4,
+  },
+  qtyStepBtn: {
+    width: 32,
+    height: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  qtyStepValue: {
+    minWidth: 22,
+    textAlign: 'center',
+    fontSize: 14,
+    fontWeight: '800',
+    color: colors.textPrimary,
+  },
   saveBtn: {
     backgroundColor: colors.ink,
     paddingHorizontal: spacing['2xl'],

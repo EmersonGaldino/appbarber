@@ -5,6 +5,33 @@ import Constants from 'expo-constants';
 
 import type { Campaign, User } from '../types';
 
+/** Expo Push exige projectId (EAS); tenta várias fontes + env público. */
+function resolveExpoProjectId(): string | undefined {
+  const fromEnv =
+    typeof process.env.EXPO_PUBLIC_EAS_PROJECT_ID === 'string'
+      ? process.env.EXPO_PUBLIC_EAS_PROJECT_ID.trim()
+      : '';
+  if (fromEnv) return fromEnv;
+
+  const ex = Constants.expoConfig?.extra as { eas?: { projectId?: string } } | undefined;
+  const fromExtra = ex?.eas?.projectId?.trim();
+  if (fromExtra) return fromExtra;
+
+  const easCfg = (Constants as { easConfig?: { projectId?: string } }).easConfig?.projectId?.trim();
+  if (easCfg) return easCfg;
+
+  const m1 = (Constants.manifest as { extra?: { eas?: { projectId?: string } } } | null)?.extra?.eas
+    ?.projectId;
+  if (m1) return String(m1).trim();
+
+  const m2 = (
+    Constants.manifest2 as { extra?: { expoClient?: { extra?: { eas?: { projectId?: string } } } } }
+  )?.extra?.expoClient?.extra?.eas?.projectId;
+  if (m2) return String(m2).trim();
+
+  return undefined;
+}
+
 /**
  * Configuração do handler global de notificações.
  * Faz com que notificações recebidas em foreground também apareçam como banner/som.
@@ -54,23 +81,31 @@ export async function registerForPushNotificationsAsync(): Promise<string | null
     const { status: existingStatus } = await Notifications.getPermissionsAsync();
     let finalStatus = existingStatus;
     if (existingStatus !== 'granted') {
-      const { status } = await Notifications.requestPermissionsAsync();
+      const { status } = await Notifications.requestPermissionsAsync({
+        ios: {
+          allowAlert: true,
+          allowBadge: true,
+          allowSound: true,
+        },
+      });
       finalStatus = status;
     }
     if (finalStatus !== 'granted') {
-      console.info('Push: permissão negada pelo usuário.');
+      console.info('Push: permissão negada ou não concedida.');
       return null;
     }
 
     await ensureAndroidChannel();
 
-    const projectId =
-      (Constants.expoConfig as any)?.extra?.eas?.projectId ??
-      (Constants as any)?.easConfig?.projectId;
+    const projectId = resolveExpoProjectId();
+    if (!projectId) {
+      console.warn(
+        'Push: sem EAS projectId. Defina EXPO_PUBLIC_EAS_PROJECT_ID no .env (Project ID em expo.dev) ou rode `eas init` e reinicie o Metro com -c.'
+      );
+      return null;
+    }
 
-    const token = await Notifications.getExpoPushTokenAsync(
-      projectId ? { projectId } : undefined
-    );
+    const token = await Notifications.getExpoPushTokenAsync({ projectId });
     return token.data ?? null;
   } catch (e) {
     console.warn('registerForPushNotificationsAsync:', e);
@@ -188,4 +223,64 @@ export function collectClientPushTokens(users: User[]): string[] {
   return users
     .filter((u) => u.role === 'client' && isExpoPushToken(u.pushToken))
     .map((u) => u.pushToken as string);
+}
+
+export interface AppointmentCompletedPushPayload {
+  token: string;
+  clientName: string;
+  professionalName?: string;
+  serviceSummary?: string;
+  notes?: string;
+}
+
+/**
+ * Envia notificação para o cliente avisando que o atendimento foi concluído.
+ * Retorna `{ ok: true }` quando a Expo Push API aceitou a entrega.
+ */
+export async function sendAppointmentCompletedPush(
+  payload: AppointmentCompletedPushPayload
+): Promise<{ ok: boolean; error?: string }> {
+  if (!isExpoPushToken(payload.token)) {
+    return { ok: false, error: 'Cliente sem token de push registrado.' };
+  }
+
+  const titleParts = ['Atendimento concluído'];
+  if (payload.professionalName) titleParts.push(`com ${payload.professionalName}`);
+
+  const bodyLines: string[] = [];
+  if (payload.serviceSummary) bodyLines.push(payload.serviceSummary);
+  if (payload.notes) bodyLines.push(`Obs.: ${payload.notes}`);
+  if (bodyLines.length === 0) {
+    bodyLines.push('Obrigado pela preferência! Volte sempre.');
+  }
+
+  const message: ExpoPushMessage = {
+    to: payload.token,
+    title: titleParts.join(' '),
+    body: bodyLines.join('\n'),
+    sound: 'default',
+    channelId: 'default',
+    priority: 'high',
+    data: { kind: 'appointment_completed', clientName: payload.clientName },
+  };
+
+  try {
+    const res = await fetch(EXPO_PUSH_ENDPOINT, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Accept-Encoding': 'gzip, deflate',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify([message]),
+    });
+    const json = (await res.json()) as { data?: ExpoPushTicket[]; errors?: any[] };
+    const ticket = json?.data?.[0];
+    if (ticket?.status === 'ok') return { ok: true };
+    if (ticket?.message) return { ok: false, error: ticket.message };
+    if (json?.errors?.length) return { ok: false, error: json.errors.map((e: any) => e?.message ?? String(e)).join('; ') };
+    return { ok: false, error: 'Resposta inesperada da Expo Push API.' };
+  } catch (e: any) {
+    return { ok: false, error: e?.message ?? String(e) };
+  }
 }

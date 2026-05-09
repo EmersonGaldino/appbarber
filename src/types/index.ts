@@ -96,6 +96,8 @@ export interface Appointment {
   clientUserId?: string;
   serviceIds: string[];
   productIds: string[];
+  /** Quantidade por id de produto (quando ausente, assume-se 1 por compatibilidade). */
+  productQuantities?: Record<string, number>;
   date: string; // YYYY-MM-DD
   startTime: string; // HH:mm
   endTime: string; // HH:mm
@@ -103,6 +105,8 @@ export interface Appointment {
   totalValue: number;
   paymentMethod?: PaymentMethod;
   notes?: string;
+  /** Feedback/observação que o cliente registra após o atendimento. */
+  clientFeedback?: string;
   createdAt: string;
 }
 
